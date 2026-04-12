@@ -15,16 +15,17 @@ const generateRefreshToken = (userId) => {
 
 // Set httpOnly cookies
 const setTokenCookies = (res, accessToken, refreshToken) => {
+  const isProduction = process.env.NODE_ENV === 'production';
   res.cookie('accessToken', accessToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
     maxAge: 15 * 60 * 1000 // 15 minutes
   });
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
     path: '/api/auth/refresh',
     maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
   });
@@ -188,8 +189,18 @@ const logout = async (req, res) => {
       }
     }
 
-    res.clearCookie('accessToken');
-    res.clearCookie('refreshToken', { path: '/api/auth/refresh' });
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.clearCookie('accessToken', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+    });
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+      path: '/api/auth/refresh',
+    });
 
     res.json({ message: 'התנתקת בהצלחה' });
   } catch (error) {
