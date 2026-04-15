@@ -4,15 +4,31 @@ const { DeviceType } = require('../models');
 // @route   GET /api/device-types
 const getDeviceTypes = async (req, res) => {
   try {
-    const { isActive } = req.query;
+    const { isActive, search, page = 1, limit = 20, all } = req.query;
     const query = {};
 
-    if (isActive !== undefined) {
-      query.isActive = isActive === 'true';
+    if (isActive !== undefined) query.isActive = isActive === 'true';
+    if (search) query.name = { $regex: search, $options: 'i' };
+
+    // Support fetching all for dropdowns (backward compatibility)
+    if (all === 'true') {
+      const deviceTypes = await DeviceType.find(query).sort({ name: 1 }).lean();
+      return res.json(deviceTypes);
     }
 
-    const deviceTypes = await DeviceType.find(query).sort({ name: 1 });
-    res.json(deviceTypes);
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.min(100, Math.max(1, Number(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [deviceTypes, total] = await Promise.all([
+      DeviceType.find(query).sort({ name: 1 }).skip(skip).limit(limitNum).lean(),
+      DeviceType.countDocuments(query)
+    ]);
+
+    res.json({
+      data: deviceTypes,
+      pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -108,8 +124,10 @@ const addStock = async (req, res) => {
 // @route   GET /api/device-types/alerts/low-stock
 const getLowStockAlerts = async (req, res) => {
   try {
-    const deviceTypes = await DeviceType.find({ isActive: true });
-    const lowStock = deviceTypes.filter(dt => dt.stockQuantity <= dt.minStockAlert);
+    const lowStock = await DeviceType.find({
+      isActive: true,
+      $expr: { $lte: ['$stockQuantity', '$minStockAlert'] }
+    }).sort({ stockQuantity: 1 }).lean();
     res.json(lowStock);
   } catch (error) {
     res.status(500).json({ message: error.message });

@@ -33,6 +33,7 @@ const scentSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// אינדקס לחיפוש לפי שם - כבר מוגדר דרך unique: true
+scentSchema.index({ isActive: 1 });
+scentSchema.index({ isActive: 1, stockQuantity: 1 });
 
 module.exports = mongoose.model('Scent', scentSchema);

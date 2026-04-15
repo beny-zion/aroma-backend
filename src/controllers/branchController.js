@@ -4,17 +4,37 @@ const { Branch, Device } = require('../models');
 // @route   GET /api/branches
 const getBranches = async (req, res) => {
   try {
-    const { customerId, city, region } = req.query;
+    const { customerId, city, region, search, page = 1, limit = 20, all } = req.query;
     const query = {};
 
     if (customerId) query.customerId = customerId;
     if (city) query.city = city;
     if (region) query.region = region;
+    if (search) query.branchName = { $regex: search, $options: 'i' };
 
-    const branches = await Branch.find(query)
-      .populate('customerId', 'name status')
-      .sort({ branchName: 1 });
-    res.json(branches);
+    // Support fetching all for dropdowns (backward compatibility)
+    if (all === 'true') {
+      const branches = await Branch.find(query)
+        .populate('customerId', 'name status')
+        .sort({ branchName: 1 }).lean();
+      return res.json(branches);
+    }
+
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.min(100, Math.max(1, Number(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [branches, total] = await Promise.all([
+      Branch.find(query)
+        .populate('customerId', 'name status')
+        .sort({ branchName: 1 }).skip(skip).limit(limitNum).lean(),
+      Branch.countDocuments(query)
+    ]);
+
+    res.json({
+      data: branches,
+      pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -4,27 +4,58 @@ const { Device, Branch } = require('../models');
 // @route   GET /api/devices
 const getDevices = async (req, res) => {
   try {
-    const { branchId, isActive, status } = req.query;
+    const { branchId, isActive, status, search, page = 1, limit = 20, all } = req.query;
     const query = {};
 
     if (branchId) query.branchId = branchId;
     if (isActive !== undefined) query.isActive = isActive === 'true';
+    if (search) query.locationInBranch = { $regex: search, $options: 'i' };
 
-    const devices = await Device.find(query)
-      .populate({
-        path: 'branchId',
-        populate: { path: 'customerId', select: 'name' }
-      })
-      .populate('scentId', 'name')
-      .sort({ nextScheduledRefill: 1 });
-
-    // סינון לפי סטטוס מילוי אם נדרש
+    // Server-side refill status filtering using date ranges
     if (status) {
-      const filtered = devices.filter(d => d.refillStatus === status);
-      return res.json(filtered);
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const fortyFiveDaysAgo = new Date(now.getTime() - 45 * 24 * 60 * 60 * 1000);
+
+      if (status === 'green') {
+        query.lastRefillDate = { $gte: thirtyDaysAgo };
+      } else if (status === 'yellow') {
+        query.lastRefillDate = { $lt: thirtyDaysAgo, $gte: fortyFiveDaysAgo };
+      } else if (status === 'red') {
+        query.$or = [
+          { lastRefillDate: { $lt: fortyFiveDaysAgo } },
+          { lastRefillDate: null }
+        ];
+      } else if (status === 'unknown') {
+        query.lastRefillDate = null;
+      }
     }
 
-    res.json(devices);
+    // Support fetching all for dropdowns (backward compatibility)
+    if (all === 'true') {
+      const devices = await Device.find(query)
+        .populate({ path: 'branchId', populate: { path: 'customerId', select: 'name' } })
+        .populate('scentId', 'name')
+        .sort({ nextScheduledRefill: 1 });
+      return res.json(devices);
+    }
+
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.min(100, Math.max(1, Number(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [devices, total] = await Promise.all([
+      Device.find(query)
+        .populate({ path: 'branchId', populate: { path: 'customerId', select: 'name' } })
+        .populate('scentId', 'name')
+        .sort({ nextScheduledRefill: 1 }).skip(skip).limit(limitNum),
+      Device.countDocuments(query)
+    ]);
+
+    res.json({
+      data: devices,
+      pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -146,43 +177,43 @@ const deleteDevice = async (req, res) => {
 // @route   GET /api/devices/stats/dashboard
 const getDashboardStats = async (req, res) => {
   try {
-    const totalDevices = await Device.countDocuments({ isActive: true });
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const fortyFiveDaysAgo = new Date(now.getTime() - 45 * 24 * 60 * 60 * 1000);
 
-    const today = new Date();
-    const thirtyDaysAgo = new Date(today.setDate(today.getDate() - 30));
-    const fortyFiveDaysAgo = new Date(new Date().setDate(new Date().getDate() - 45));
-    const twentyDaysAgo = new Date(new Date().setDate(new Date().getDate() - 20));
+    // Single aggregation instead of 4 separate queries
+    const [statusCounts] = await Device.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          green: {
+            $sum: { $cond: [{ $and: [{ $ne: ['$lastRefillDate', null] }, { $gte: ['$lastRefillDate', thirtyDaysAgo] }] }, 1, 0] }
+          },
+          yellow: {
+            $sum: { $cond: [{ $and: [{ $ne: ['$lastRefillDate', null] }, { $lt: ['$lastRefillDate', thirtyDaysAgo] }, { $gte: ['$lastRefillDate', fortyFiveDaysAgo] }] }, 1, 0] }
+          },
+          red: {
+            $sum: { $cond: [{ $or: [{ $eq: ['$lastRefillDate', null] }, { $lt: ['$lastRefillDate', fortyFiveDaysAgo] }] }, 1, 0] }
+          }
+        }
+      }
+    ]);
 
-    // ספירת מכשירים לפי סטטוס
-    const greenCount = await Device.countDocuments({
-      isActive: true,
-      lastRefillDate: { $gte: twentyDaysAgo }
-    });
-
-    const yellowCount = await Device.countDocuments({
-      isActive: true,
-      lastRefillDate: { $lt: twentyDaysAgo, $gte: fortyFiveDaysAgo }
-    });
-
-    const redCount = await Device.countDocuments({
-      isActive: true,
-      $or: [
-        { lastRefillDate: { $lt: fortyFiveDaysAgo } },
-        { lastRefillDate: null }
-      ]
-    });
+    const totalDevices = statusCounts?.total || 0;
 
     res.json({
       totalDevices,
       statusCounts: {
-        green: greenCount,
-        yellow: yellowCount,
-        red: redCount
+        green: statusCounts?.green || 0,
+        yellow: statusCounts?.yellow || 0,
+        red: statusCounts?.red || 0
       },
       percentages: {
-        green: totalDevices ? Math.round((greenCount / totalDevices) * 100) : 0,
-        yellow: totalDevices ? Math.round((yellowCount / totalDevices) * 100) : 0,
-        red: totalDevices ? Math.round((redCount / totalDevices) * 100) : 0
+        green: totalDevices ? Math.round(((statusCounts?.green || 0) / totalDevices) * 100) : 0,
+        yellow: totalDevices ? Math.round(((statusCounts?.yellow || 0) / totalDevices) * 100) : 0,
+        red: totalDevices ? Math.round(((statusCounts?.red || 0) / totalDevices) * 100) : 0
       }
     });
   } catch (error) {

@@ -3,6 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
+const compression = require('compression');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/db');
 const { protect } = require('./middleware/auth');
 
@@ -25,7 +28,27 @@ const app = express();
 // Connect to database
 connectDB();
 
-// Middleware
+// Security & Performance Middleware
+app.use(helmet());
+app.use(compression());
+
+// Rate limiting - 100 requests per 15 minutes per IP
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  message: { message: 'יותר מדי בקשות, נסה שוב מאוחר יותר' }
+});
+app.use('/api/', limiter);
+
+// Stricter rate limit for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { message: 'יותר מדי ניסיונות כניסה, נסה שוב מאוחר יותר' }
+});
+app.use('/api/auth/login', authLimiter);
+
+// CORS
 app.use(cors({
   origin: function (origin, callback) {
     const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
@@ -45,8 +68,8 @@ app.use(cors({
   credentials: true
 }));
 app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging - morgan
 app.use(morgan(':method :url :status :response-time ms'));

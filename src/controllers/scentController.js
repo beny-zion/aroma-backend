@@ -4,19 +4,36 @@ const { Scent } = require('../models');
 // @route   GET /api/scents
 const getScents = async (req, res) => {
   try {
-    const { isActive, lowStock } = req.query;
+    const { isActive, lowStock, search, page = 1, limit = 20, all } = req.query;
     const query = {};
 
     if (isActive !== undefined) query.isActive = isActive === 'true';
+    if (search) query.name = { $regex: search, $options: 'i' };
 
-    let scents = await Scent.find(query).sort({ name: 1 });
-
-    // סינון ריחות עם מלאי נמוך
+    // Server-side low stock filtering
     if (lowStock === 'true') {
-      scents = scents.filter(s => s.stockQuantity <= s.minStockAlert);
+      query.$expr = { $lte: ['$stockQuantity', '$minStockAlert'] };
     }
 
-    res.json(scents);
+    // Support fetching all for dropdowns (backward compatibility)
+    if (all === 'true') {
+      const scents = await Scent.find(query).sort({ name: 1 }).lean();
+      return res.json(scents);
+    }
+
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.min(100, Math.max(1, Number(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [scents, total] = await Promise.all([
+      Scent.find(query).sort({ name: 1 }).skip(skip).limit(limitNum).lean(),
+      Scent.countDocuments(query)
+    ]);
+
+    res.json({
+      data: scents,
+      pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -109,8 +126,10 @@ const addStock = async (req, res) => {
 // @route   GET /api/scents/alerts/low-stock
 const getLowStockAlerts = async (req, res) => {
   try {
-    const scents = await Scent.find({ isActive: true });
-    const lowStock = scents.filter(s => s.stockQuantity <= s.minStockAlert);
+    const lowStock = await Scent.find({
+      isActive: true,
+      $expr: { $lte: ['$stockQuantity', '$minStockAlert'] }
+    }).sort({ stockQuantity: 1 }).lean();
 
     res.json({
       count: lowStock.length,
