@@ -6,6 +6,7 @@ const Scent = require('./Scent');
 const DeviceType = require('./DeviceType');
 const User = require('./User');
 const WorkOrder = require('./WorkOrder');
+const ChatConversation = require('./ChatConversation');
 
 module.exports = {
   Customer,
@@ -15,5 +16,6 @@ module.exports = {
   Scent,
   DeviceType,
   User,
-  WorkOrder
+  WorkOrder,
+  ChatConversation
 };

@@ -20,7 +20,8 @@ const {
   deviceTypeRoutes,
   authRoutes,
   userRoutes,
-  workOrderRoutes
+  workOrderRoutes,
+  chatRoutes
 } = require('./routes');
 
 const app = express();
@@ -47,6 +48,14 @@ const authLimiter = rateLimit({
   message: { message: 'יותר מדי ניסיונות כניסה, נסה שוב מאוחר יותר' }
 });
 app.use('/api/auth/login', authLimiter);
+
+// Chat rate limiter - 15 messages per minute
+const chatLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 15,
+  message: { message: 'יותר מדי הודעות. נסה שוב בעוד דקה' }
+});
+app.use('/api/chat/message', chatLimiter);
 
 // CORS
 app.use(cors({
@@ -87,6 +96,7 @@ app.use('/api/service-logs', protect, serviceLogRoutes);
 app.use('/api/scents', protect, scentRoutes);
 app.use('/api/admin', protect, adminRoutes);
 app.use('/api/device-types', protect, deviceTypeRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Health check route
 app.get('/api/health', (req, res) => {
