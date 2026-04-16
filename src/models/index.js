@@ -7,6 +7,7 @@ const DeviceType = require('./DeviceType');
 const User = require('./User');
 const WorkOrder = require('./WorkOrder');
 const ChatConversation = require('./ChatConversation');
+const AnalyticsEvent = require('./AnalyticsEvent');
 
 module.exports = {
   Customer,
@@ -17,5 +18,6 @@ module.exports = {
   DeviceType,
   User,
   WorkOrder,
-  ChatConversation
+  ChatConversation,
+  AnalyticsEvent
 };

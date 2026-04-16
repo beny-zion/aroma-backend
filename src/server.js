@@ -21,7 +21,8 @@ const {
   authRoutes,
   userRoutes,
   workOrderRoutes,
-  chatRoutes
+  chatRoutes,
+  analyticsRoutes
 } = require('./routes');
 
 const app = express();
@@ -97,6 +98,15 @@ app.use('/api/scents', protect, scentRoutes);
 app.use('/api/admin', protect, adminRoutes);
 app.use('/api/device-types', protect, deviceTypeRoutes);
 app.use('/api/chat', chatRoutes);
+
+// Analytics routes (track is public, admin endpoints use their own password middleware)
+const analyticsLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60,
+  message: { message: 'Too many tracking requests' }
+});
+app.use('/api/analytics/track', analyticsLimiter);
+app.use('/api/analytics', analyticsRoutes);
 
 // Health check route
 app.get('/api/health', (req, res) => {
