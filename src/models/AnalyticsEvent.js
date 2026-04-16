@@ -58,6 +58,11 @@ const analyticsEventSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  deviceFingerprint: {
+    type: String,
+    trim: true,
+    index: true
+  },
   metadata: {
     type: mongoose.Schema.Types.Mixed,
     default: {}

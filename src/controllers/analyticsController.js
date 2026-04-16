@@ -57,6 +57,7 @@ const trackEvent = async (req, res) => {
       sessionId: event.sessionId,
       ipAddress,
       screenResolution: event.screenResolution || null,
+      deviceFingerprint: event.deviceFingerprint || null,
       metadata: event.metadata || {},
       timestamp: event.timestamp ? new Date(event.timestamp) : new Date()
     }));
@@ -83,13 +84,15 @@ const getOverview = async (req, res) => {
       totalEvents,
       uniqueIPs,
       uniqueSessions,
+      uniqueDevices,
       dailyTrend,
       deviceBreakdown,
       topPages,
       topVisitors,
       hourlyHeatmap,
       roleBreakdown,
-      browserBreakdown
+      browserBreakdown,
+      chatUsage
     ] = await Promise.all([
       // 1. Total events
       AnalyticsEvent.countDocuments({ timestamp: { $gte: since } }),
@@ -99,6 +102,9 @@ const getOverview = async (req, res) => {
 
       // 3. Unique sessions
       AnalyticsEvent.distinct('sessionId', { timestamp: { $gte: since }, sessionId: { $ne: null } }),
+
+      // 3b. Unique device fingerprints
+      AnalyticsEvent.distinct('deviceFingerprint', { timestamp: { $gte: since }, deviceFingerprint: { $ne: null } }),
 
       // 4. Daily trend (Israel timezone)
       AnalyticsEvent.aggregate([
@@ -150,6 +156,7 @@ const getOverview = async (req, res) => {
           browsers: { $addToSet: '$browser' },
           os: { $addToSet: '$os' },
           screenResolutions: { $addToSet: '$screenResolution' },
+          deviceFingerprints: { $addToSet: '$deviceFingerprint' },
           firstSeen: { $min: '$timestamp' },
           lastSeen: { $max: '$timestamp' }
         }},
@@ -160,6 +167,7 @@ const getOverview = async (req, res) => {
           events: 1,
           sessionsCount: { $size: '$sessions' },
           pagesVisited: { $size: '$pages' },
+          uniqueDevicesCount: { $size: { $filter: { input: '$deviceFingerprints', cond: { $ne: ['$$this', null] } } } },
           devices: 1,
           browsers: 1,
           os: 1,
@@ -196,6 +204,22 @@ const getOverview = async (req, res) => {
         { $match: { timestamp: { $gte: since } } },
         { $group: { _id: '$browser', count: { $sum: 1 } } },
         { $sort: { count: -1 } }
+      ]),
+
+      // 11. Chat/AI usage stats
+      AnalyticsEvent.aggregate([
+        { $match: { timestamp: { $gte: since }, type: 'action', action: { $regex: /^chat_/ } } },
+        { $group: {
+          _id: '$action',
+          count: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$ipAddress' }
+        }},
+        { $project: {
+          _id: 1,
+          count: 1,
+          uniqueUsers: { $size: '$uniqueUsers' }
+        }},
+        { $sort: { count: -1 } }
       ])
     ]);
 
@@ -205,6 +229,7 @@ const getOverview = async (req, res) => {
         kpis: {
           totalEvents,
           uniqueVisitors: uniqueIPs.length,
+          uniqueDevices: uniqueDevices.length,
           uniqueSessions: uniqueSessions.length,
           avgEventsPerSession: uniqueSessions.length > 0
             ? Math.round(totalEvents / uniqueSessions.length)
@@ -217,6 +242,7 @@ const getOverview = async (req, res) => {
         hourlyHeatmap,
         roleBreakdown,
         browserBreakdown,
+        chatUsage,
         period: { days, since: since.toISOString() }
       }
     });
