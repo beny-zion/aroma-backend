@@ -53,8 +53,7 @@ const deviceTypeSchema = new mongoose.Schema({
 // כלול virtuals ב-JSON
 deviceTypeSchema.set('toJSON', { virtuals: true });
 
-// אינדקסים
-deviceTypeSchema.index({ name: 1 });
+// אינדקסים (name כבר מאונדקס דרך unique: true)
 deviceTypeSchema.index({ isActive: 1 });
 
 module.exports = mongoose.model('DeviceType', deviceTypeSchema);

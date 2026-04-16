@@ -27,6 +27,9 @@ const {
 
 const app = express();
 
+// Trust proxy - required for Render/reverse proxy (express-rate-limit needs this)
+app.set('trust proxy', 1);
+
 // Connect to database
 connectDB();
 
@@ -107,6 +110,11 @@ const analyticsLimiter = rateLimit({
 });
 app.use('/api/analytics/track', analyticsLimiter);
 app.use('/api/analytics', analyticsRoutes);
+
+// Root route (Render health checks)
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', service: 'Aroma Plus API' });
+});
 
 // Health check route
 app.get('/api/health', (req, res) => {
