@@ -10,6 +10,7 @@ const userRoutes = require('./userRoutes');
 const workOrderRoutes = require('./workOrderRoutes');
 const chatRoutes = require('./chatRoutes');
 const analyticsRoutes = require('./analyticsRoutes');
+const scheduleRoutes = require('./scheduleRoutes');
 
 module.exports = {
   customerRoutes,
@@ -23,5 +24,6 @@ module.exports = {
   userRoutes,
   workOrderRoutes,
   chatRoutes,
-  analyticsRoutes
+  analyticsRoutes,
+  scheduleRoutes
 };

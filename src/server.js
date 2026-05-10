@@ -22,7 +22,8 @@ const {
   userRoutes,
   workOrderRoutes,
   chatRoutes,
-  analyticsRoutes
+  analyticsRoutes,
+  scheduleRoutes
 } = require('./routes');
 
 const app = express();
@@ -93,6 +94,7 @@ app.use('/api/auth', authRoutes);
 // Protected routes
 app.use('/api/users', userRoutes);
 app.use('/api/work-orders', workOrderRoutes);
+app.use('/api/schedule', scheduleRoutes);
 app.use('/api/customers', protect, customerRoutes);
 app.use('/api/branches', protect, branchRoutes);
 app.use('/api/devices', protect, deviceRoutes);

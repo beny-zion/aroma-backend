@@ -1,17 +1,27 @@
 const { WorkOrder, Branch, Device, User } = require('../models');
+const mongoose = require('mongoose');
 
 // @desc    Get all work orders (admin/manager)
 // @route   GET /api/work-orders
 const getWorkOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 20, status, priority, type, assignedTo, branchId, dateFrom, dateTo } = req.query;
+    const { page = 1, limit = 20, status, priority, type, assignedTo, branchId, customerId, deviceId, dateFrom, dateTo } = req.query;
     const query = {};
 
-    if (status) query.status = status;
+    if (status) {
+      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+      query.status = statuses.length > 1 ? { $in: statuses } : statuses[0];
+    }
     if (priority) query.priority = priority;
     if (type) query.type = type;
     if (assignedTo) query.assignedTo = assignedTo;
     if (branchId) query.branchId = branchId;
+    if (deviceId) query['devices.deviceId'] = deviceId;
+    if (customerId) {
+      // Resolve customer → branches → filter WOs by those branchIds
+      const branchesOfCustomer = await Branch.find({ customerId }).select('_id').lean();
+      query.branchId = query.branchId || { $in: branchesOfCustomer.map(b => b._id) };
+    }
     if (dateFrom || dateTo) {
       query.scheduledDate = {};
       if (dateFrom) query.scheduledDate.$gte = new Date(dateFrom);
@@ -51,7 +61,10 @@ const getMyWorkOrders = async (req, res) => {
     const { page = 1, limit = 20, status } = req.query;
     const query = { assignedTo: req.user._id };
 
-    if (status) query.status = status;
+    if (status) {
+      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+      query.status = statuses.length > 1 ? { $in: statuses } : statuses[0];
+    }
 
     const limitNum = Math.min(Number(limit), 100);
     const pageNum = Number(page);
@@ -200,7 +213,7 @@ const updateWorkOrder = async (req, res) => {
 // @route   PATCH /api/work-orders/:id/status
 const updateWorkOrderStatus = async (req, res) => {
   try {
-    const { status, completionNotes, devices } = req.body;
+    const { status, completionNotes, devices, followupDays } = req.body;
     const workOrder = await WorkOrder.findById(req.params.id);
 
     if (!workOrder) {
@@ -234,10 +247,35 @@ const updateWorkOrderStatus = async (req, res) => {
 
     const updateData = { status };
 
+    let followupOrder = null;
     if (status === 'completed') {
       updateData.completedDate = new Date();
       if (completionNotes) updateData.completionNotes = completionNotes;
       if (devices) updateData.devices = devices;
+
+      // Create a follow-up WO for unfilled devices if requested
+      if (followupDays && Number(followupDays) > 0) {
+        const finalDevices = devices || workOrder.devices;
+        const unfilled = (finalDevices || []).filter(d => !d.isCompleted);
+        if (unfilled.length > 0) {
+          const nextDate = new Date(workOrder.scheduledDate);
+          nextDate.setDate(nextDate.getDate() + Number(followupDays));
+          followupOrder = await WorkOrder.create({
+            branchId: workOrder.branchId,
+            assignedTo: workOrder.assignedTo,
+            createdBy: req.user._id,
+            scheduledDate: nextDate,
+            status: workOrder.assignedTo ? 'assigned' : 'pending',
+            priority: workOrder.priority,
+            type: workOrder.type,
+            devices: unfilled.map(d => ({
+              deviceId: d.deviceId?._id || d.deviceId,
+              taskDescription: d.taskDescription || 'מילוי חוזר'
+            })),
+            notes: `המשך מהזמנה קודמת — ${unfilled.length} מכשירים לא הושלמו`
+          });
+        }
+      }
     }
 
     const updated = await WorkOrder.findByIdAndUpdate(
@@ -253,7 +291,13 @@ const updateWorkOrderStatus = async (req, res) => {
       .populate('assignedTo', 'name phone')
       .populate('createdBy', 'name');
 
-    res.json({ message: 'סטטוס עודכן בהצלחה', data: updated });
+    res.json({
+      message: followupOrder
+        ? `סטטוס עודכן. נוצרה הזמנת המשך עם ${followupOrder.devices.length} מכשירים`
+        : 'סטטוס עודכן בהצלחה',
+      data: updated,
+      followupOrderId: followupOrder?._id
+    });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }

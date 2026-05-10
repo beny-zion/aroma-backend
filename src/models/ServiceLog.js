@@ -41,6 +41,10 @@ const serviceLogSchema = new mongoose.Schema({
   issuesFound: {
     type: String,
     trim: true
+  },
+  images: {
+    type: [String],
+    default: []
   }
 }, {
   timestamps: true
