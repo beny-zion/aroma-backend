@@ -65,7 +65,11 @@ const getWorkOrders = async (req, res) => {
 // @route   GET /api/work-orders/my
 const getMyWorkOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 20, status } = req.query;
+    // A technician can easily have 100+ open WOs after a weekly schedule save,
+    // and the technician UI needs all of them to group by date / show the calendar.
+    // Bump the default + ceiling accordingly; pagination params still work for callers
+    // that want fewer rows.
+    const { page = 1, limit = 500, status } = req.query;
     const query = { assignedTo: req.user._id };
 
     if (status) {
@@ -73,7 +77,7 @@ const getMyWorkOrders = async (req, res) => {
       query.status = statuses.length > 1 ? { $in: statuses } : statuses[0];
     }
 
-    const limitNum = Math.min(Number(limit), 100);
+    const limitNum = Math.min(Number(limit), 1000);
     const pageNum = Number(page);
 
     const workOrders = await WorkOrder.find(query)
