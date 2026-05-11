@@ -1,4 +1,12 @@
 const { Device, Branch } = require('../models');
+const { logCreate, logUpdate, logDelete } = require('../utils/audit');
+
+function deviceLabel(device, branch) {
+  const parts = [device.deviceType || 'מכשיר'];
+  if (device.locationInBranch) parts.push(device.locationInBranch);
+  if (branch?.branchName) parts.push(`(${branch.branchName})`);
+  return parts.join(' ');
+}
 
 // @desc    Get all devices
 // @route   GET /api/devices
@@ -135,6 +143,8 @@ const getDevice = async (req, res) => {
 const createDevice = async (req, res) => {
   try {
     const device = await Device.create(req.body);
+    const branch = await Branch.findById(device.branchId).lean();
+    await logCreate(req, 'device', device._id, deviceLabel(device, branch), device.toObject());
     res.status(201).json(device);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -145,14 +155,15 @@ const createDevice = async (req, res) => {
 // @route   PUT /api/devices/:id
 const updateDevice = async (req, res) => {
   try {
+    const before = await Device.findById(req.params.id).lean();
+    if (!before) return res.status(404).json({ message: 'מכשיר לא נמצא' });
     const device = await Device.findByIdAndUpdate(
       req.params.id,
       req.body,
       { new: true, runValidators: true }
     );
-    if (!device) {
-      return res.status(404).json({ message: 'מכשיר לא נמצא' });
-    }
+    const branch = await Branch.findById(device.branchId).lean();
+    await logUpdate(req, 'device', device._id, deviceLabel(device, branch), before, device.toObject());
     res.json(device);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -167,6 +178,8 @@ const deleteDevice = async (req, res) => {
     if (!device) {
       return res.status(404).json({ message: 'מכשיר לא נמצא' });
     }
+    const branch = await Branch.findById(device.branchId).lean();
+    await logDelete(req, 'device', device._id, deviceLabel(device, branch), device.toObject());
     res.json({ message: 'מכשיר נמחק בהצלחה' });
   } catch (error) {
     res.status(500).json({ message: error.message });

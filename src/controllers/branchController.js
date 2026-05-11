@@ -1,4 +1,5 @@
 const { Branch, Device } = require('../models');
+const { logCreate, logUpdate, logDelete } = require('../utils/audit');
 
 // @desc    Get all branches
 // @route   GET /api/branches
@@ -85,6 +86,7 @@ const getBranch = async (req, res) => {
 const createBranch = async (req, res) => {
   try {
     const branch = await Branch.create(req.body);
+    await logCreate(req, 'branch', branch._id, branch.branchName, branch.toObject());
     res.status(201).json(branch);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -95,14 +97,14 @@ const createBranch = async (req, res) => {
 // @route   PUT /api/branches/:id
 const updateBranch = async (req, res) => {
   try {
+    const before = await Branch.findById(req.params.id).lean();
+    if (!before) return res.status(404).json({ message: 'סניף לא נמצא' });
     const branch = await Branch.findByIdAndUpdate(
       req.params.id,
       req.body,
       { new: true, runValidators: true }
     );
-    if (!branch) {
-      return res.status(404).json({ message: 'סניף לא נמצא' });
-    }
+    await logUpdate(req, 'branch', branch._id, branch.branchName, before, branch.toObject());
     res.json(branch);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -117,6 +119,7 @@ const deleteBranch = async (req, res) => {
     if (!branch) {
       return res.status(404).json({ message: 'סניף לא נמצא' });
     }
+    await logDelete(req, 'branch', branch._id, branch.branchName, branch.toObject());
     res.json({ message: 'סניף נמחק בהצלחה' });
   } catch (error) {
     res.status(500).json({ message: error.message });

@@ -8,6 +8,7 @@ const User = require('./User');
 const WorkOrder = require('./WorkOrder');
 const ChatConversation = require('./ChatConversation');
 const AnalyticsEvent = require('./AnalyticsEvent');
+const AuditLog = require('./AuditLog');
 
 module.exports = {
   Customer,
@@ -19,5 +20,6 @@ module.exports = {
   User,
   WorkOrder,
   ChatConversation,
-  AnalyticsEvent
+  AnalyticsEvent,
+  AuditLog
 };

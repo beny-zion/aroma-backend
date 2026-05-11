@@ -1,5 +1,12 @@
 const { WorkOrder, Branch, Device, User } = require('../models');
 const mongoose = require('mongoose');
+const { logEvent, logUpdate } = require('../utils/audit');
+
+function woLabel(wo, branch) {
+  const dateStr = wo.scheduledDate ? new Date(wo.scheduledDate).toLocaleDateString('he-IL') : '';
+  const branchName = branch?.branchName || branch?.name || '';
+  return [dateStr, branchName].filter(Boolean).join(' · ') || 'הזמנת עבודה';
+}
 
 // @desc    Get all work orders (admin/manager)
 // @route   GET /api/work-orders
@@ -166,6 +173,12 @@ const createWorkOrder = async (req, res) => {
       .populate('assignedTo', 'name phone')
       .populate('createdBy', 'name');
 
+    await logEvent(req, 'work_order', workOrder._id, woLabel(workOrder, branch), 'create', {
+      changes: assignedTo
+        ? [{ field: 'assignedTo', from: null, to: populated.assignedTo?.name || String(assignedTo) }]
+        : []
+    });
+
     res.status(201).json({ message: 'הזמנת עבודה נוצרה בהצלחה', data: populated });
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -190,6 +203,7 @@ const updateWorkOrder = async (req, res) => {
       return res.status(403).json({ message: 'אין הרשאה לעדכן הזמנה זו' });
     }
 
+    const before = workOrder.toObject();
     const updated = await WorkOrder.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -202,6 +216,9 @@ const updateWorkOrder = async (req, res) => {
       })
       .populate('assignedTo', 'name phone')
       .populate('createdBy', 'name');
+
+    const branchForLabel = updated.branchId;
+    await logUpdate(req, 'work_order', updated._id, woLabel(updated, branchForLabel), before, updated.toObject());
 
     res.json({ message: 'הזמנת עבודה עודכנה בהצלחה', data: updated });
   } catch (error) {
@@ -278,6 +295,7 @@ const updateWorkOrderStatus = async (req, res) => {
       }
     }
 
+    const oldStatus = workOrder.status;
     const updated = await WorkOrder.findByIdAndUpdate(
       req.params.id,
       updateData,
@@ -290,6 +308,23 @@ const updateWorkOrderStatus = async (req, res) => {
       })
       .populate('assignedTo', 'name phone')
       .populate('createdBy', 'name');
+
+    // Log the action — pick the most descriptive type for the timeline
+    const auditAction =
+      status === 'completed' ? 'complete' :
+      status === 'cancelled' ? 'cancel' :
+      status === 'assigned' ? 'assign' :
+      'status_change';
+    await logEvent(req, 'work_order', updated._id, woLabel(updated, updated.branchId), auditAction, {
+      changes: [{ field: 'status', from: oldStatus, to: status }],
+      notes: completionNotes
+    });
+    if (followupOrder) {
+      const followupBranch = await Branch.findById(followupOrder.branchId).lean();
+      await logEvent(req, 'work_order', followupOrder._id, woLabel(followupOrder, followupBranch), 'create', {
+        notes: `נוצר אוטומטית כהמשך להזמנה ${updated._id} עם ${followupOrder.devices.length} מכשירים שלא הושלמו`
+      });
+    }
 
     res.json({
       message: followupOrder

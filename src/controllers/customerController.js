@@ -1,4 +1,5 @@
 const { Customer, Branch, Device } = require('../models');
+const { logCreate, logUpdate, logDelete } = require('../utils/audit');
 
 // @desc    Get all customers
 // @route   GET /api/customers
@@ -137,6 +138,7 @@ const getCustomer = async (req, res) => {
 const createCustomer = async (req, res) => {
   try {
     const customer = await Customer.create(req.body);
+    await logCreate(req, 'customer', customer._id, customer.name, customer.toObject());
     res.status(201).json(customer);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -147,14 +149,14 @@ const createCustomer = async (req, res) => {
 // @route   PUT /api/customers/:id
 const updateCustomer = async (req, res) => {
   try {
+    const before = await Customer.findById(req.params.id).lean();
+    if (!before) return res.status(404).json({ message: 'לקוח לא נמצא' });
     const customer = await Customer.findByIdAndUpdate(
       req.params.id,
       req.body,
       { new: true, runValidators: true }
     );
-    if (!customer) {
-      return res.status(404).json({ message: 'לקוח לא נמצא' });
-    }
+    await logUpdate(req, 'customer', customer._id, customer.name, before, customer.toObject());
     res.json(customer);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -169,6 +171,7 @@ const deleteCustomer = async (req, res) => {
     if (!customer) {
       return res.status(404).json({ message: 'לקוח לא נמצא' });
     }
+    await logDelete(req, 'customer', customer._id, customer.name, customer.toObject());
     res.json({ message: 'לקוח נמחק בהצלחה' });
   } catch (error) {
     res.status(500).json({ message: error.message });
