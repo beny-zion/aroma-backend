@@ -38,10 +38,10 @@ connectDB();
 app.use(helmet());
 app.use(compression());
 
-// Rate limiting - 100 requests per 15 minutes per IP
+// Rate limiting - 1000 requests per 15 minutes per IP (CRM dashboards make many requests)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 1000,
   message: { message: 'יותר מדי בקשות, נסה שוב מאוחר יותר' }
 });
 app.use('/api/', limiter);
