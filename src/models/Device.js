@@ -35,6 +35,11 @@ const deviceSchema = new mongoose.Schema({
     type: Number,
     default: 100 // כמות מ"ל ממוצעת למילוי
   },
+  monthlyRate: {
+    type: Number,
+    default: 0,
+    min: 0 // תעריף חודשי בש"ח שהלקוח משלם על המכשיר הזה
+  },
   isActive: {
     type: Boolean,
     default: true

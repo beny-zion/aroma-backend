@@ -1,4 +1,4 @@
-const { Customer, Branch } = require('../models');
+const { Customer, Branch, Device } = require('../models');
 
 // @desc    Get all customers
 // @route   GET /api/customers
@@ -30,8 +30,55 @@ const getCustomers = async (req, res) => {
       Customer.countDocuments(query)
     ]);
 
+    // Aggregate per-customer counts (branches + devices) for the current page
+    const customerIds = customers.map(c => c._id);
+    const branches = await Branch.find({ customerId: { $in: customerIds } }, '_id customerId isActive').lean();
+    const branchByCustomer = new Map();
+    for (const b of branches) {
+      const key = b.customerId.toString();
+      if (!branchByCustomer.has(key)) branchByCustomer.set(key, []);
+      branchByCustomer.get(key).push(b);
+    }
+    const branchIds = branches.map(b => b._id);
+    const deviceAgg = await Device.aggregate([
+      { $match: { branchId: { $in: branchIds } } },
+      { $group: {
+        _id: '$branchId',
+        deviceCount: { $sum: 1 },
+        activeDeviceCount: { $sum: { $cond: ['$isActive', 1, 0] } },
+        totalMonthlyRate: { $sum: { $cond: ['$isActive', { $ifNull: ['$monthlyRate', 0] }, 0] } }
+      } }
+    ]);
+    const aggByBranch = new Map(deviceAgg.map(a => [a._id.toString(), a]));
+
+    const customersEnriched = customers.map(c => {
+      const cBranches = branchByCustomer.get(c._id.toString()) || [];
+      const branchCount = cBranches.length;
+      const activeBranchCount = cBranches.filter(b => b.isActive !== false).length;
+      let activeDeviceCount = 0;
+      let deviceCount = 0;
+      let totalMonthlyRate = 0;
+      for (const b of cBranches) {
+        const a = aggByBranch.get(b._id.toString());
+        if (!a) continue;
+        deviceCount += a.deviceCount || 0;
+        if (b.isActive !== false) {
+          activeDeviceCount += a.activeDeviceCount || 0;
+          totalMonthlyRate += a.totalMonthlyRate || 0;
+        }
+      }
+      return {
+        ...c,
+        branchCount,
+        activeBranchCount,
+        deviceCount,
+        activeDeviceCount,
+        computedMonthlyTotal: totalMonthlyRate
+      };
+    });
+
     res.json({
-      data: customers,
+      data: customersEnriched,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
     });
   } catch (error) {
@@ -49,7 +96,37 @@ const getCustomer = async (req, res) => {
     }
 
     const branches = await Branch.find({ customerId: customer._id });
-    res.json({ ...customer.toObject(), branches });
+    const branchIds = branches.map(b => b._id);
+
+    // Aggregate device count + monthlyRate sum per branch
+    const aggByBranch = await Device.aggregate([
+      { $match: { branchId: { $in: branchIds } } },
+      { $group: {
+        _id: '$branchId',
+        deviceCount: { $sum: 1 },
+        activeDeviceCount: { $sum: { $cond: ['$isActive', 1, 0] } },
+        totalMonthlyRate: { $sum: { $cond: ['$isActive', { $ifNull: ['$monthlyRate', 0] }, 0] } }
+      } }
+    ]);
+    const aggMap = new Map(aggByBranch.map(a => [a._id.toString(), a]));
+
+    const branchesEnriched = branches.map(b => {
+      const a = aggMap.get(b._id.toString());
+      return {
+        ...b.toObject(),
+        deviceCount: a?.deviceCount || 0,
+        activeDeviceCount: a?.activeDeviceCount || 0,
+        totalMonthlyRate: a?.totalMonthlyRate || 0
+      };
+    });
+
+    const computedMonthlyTotal = branchesEnriched.reduce((s, b) => s + (b.totalMonthlyRate || 0), 0);
+
+    res.json({
+      ...customer.toObject(),
+      branches: branchesEnriched,
+      computedMonthlyTotal
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

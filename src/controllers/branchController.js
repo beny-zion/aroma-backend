@@ -31,8 +31,30 @@ const getBranches = async (req, res) => {
       Branch.countDocuments(query)
     ]);
 
+    // Aggregate device counts per branch (for the current page)
+    const branchIds = branches.map(b => b._id);
+    const deviceAgg = await Device.aggregate([
+      { $match: { branchId: { $in: branchIds } } },
+      { $group: {
+        _id: '$branchId',
+        deviceCount: { $sum: 1 },
+        activeDeviceCount: { $sum: { $cond: ['$isActive', 1, 0] } },
+        totalMonthlyRate: { $sum: { $cond: ['$isActive', { $ifNull: ['$monthlyRate', 0] }, 0] } }
+      } }
+    ]);
+    const aggMap = new Map(deviceAgg.map(a => [a._id.toString(), a]));
+    const branchesEnriched = branches.map(b => {
+      const a = aggMap.get(b._id.toString());
+      return {
+        ...b,
+        deviceCount: a?.deviceCount || 0,
+        activeDeviceCount: a?.activeDeviceCount || 0,
+        totalMonthlyRate: a?.totalMonthlyRate || 0
+      };
+    });
+
     res.json({
-      data: branches,
+      data: branchesEnriched,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
     });
   } catch (error) {
