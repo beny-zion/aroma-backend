@@ -26,10 +26,32 @@ const getCustomers = async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, Number(limit)));
     const skip = (pageNum - 1) * limitNum;
 
-    const [customers, total] = await Promise.all([
+    // Aggregate global totals across the FULL filtered set (not just this page)
+    // so the page header can show real totals — sum monthlyPrice + sum of all
+    // active devices' monthlyRate across every customer that matches `query`.
+    const [customers, total, globalTotals] = await Promise.all([
       Customer.find(query).sort({ name: 1 }).skip(skip).limit(limitNum).lean(),
-      Customer.countDocuments(query)
+      Customer.countDocuments(query),
+      Customer.aggregate([
+        { $match: query },
+        { $group: { _id: null, monthlyPriceSum: { $sum: { $ifNull: ['$monthlyPrice', 0] } } } }
+      ])
     ]);
+    const totalsByCustomerLevel = globalTotals[0]?.monthlyPriceSum || 0;
+
+    // Sum device-level monthly rates across ALL active branches of customers in the filtered set
+    const allMatchingCustomerIds = await Customer.find(query, '_id').lean();
+    const allMatchingIds = allMatchingCustomerIds.map(c => c._id);
+    const allBranchesForMatching = await Branch.find(
+      { customerId: { $in: allMatchingIds }, isActive: { $ne: false } },
+      '_id'
+    ).lean();
+    const allActiveBranchIds = allBranchesForMatching.map(b => b._id);
+    const deviceTotalsAgg = await Device.aggregate([
+      { $match: { branchId: { $in: allActiveBranchIds }, isActive: true } },
+      { $group: { _id: null, totalMonthlyRate: { $sum: { $ifNull: ['$monthlyRate', 0] } } } }
+    ]);
+    const totalsByDeviceLevel = deviceTotalsAgg[0]?.totalMonthlyRate || 0;
 
     // Aggregate per-customer counts (branches + devices) for the current page
     const customerIds = customers.map(c => c._id);
@@ -80,7 +102,12 @@ const getCustomers = async (req, res) => {
 
     res.json({
       data: customersEnriched,
-      pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
+      pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
+      totals: {
+        // Across the FULL filtered set, not just the current page
+        monthlyPriceSum: totalsByCustomerLevel,
+        deviceMonthlyRateSum: totalsByDeviceLevel
+      }
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
