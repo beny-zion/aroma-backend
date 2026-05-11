@@ -361,90 +361,92 @@ const saveSchedule = async (req, res) => {
       return res.status(400).json({ message: 'מבנה ימים לא תקין' });
     }
 
-    let created = 0;
-    let updated = 0;
-    let skipped = 0;
+    // === COLLECT ===
+    const existingUpdates = []; // { id, updates }
+    const existingIds = [];     // for one-shot find
+    const newCandidates = [];   // { branch, day }
 
     for (const day of days) {
-      // Support both new shape (blocks) and legacy (branches directly)
       const blocksInDay = Array.isArray(day.blocks) ? day.blocks : [];
       const legacyBranches = Array.isArray(day.branches) ? day.branches : [];
 
-      // Existing-WO blocks → UPDATE (date + tech) if changed
       for (const blk of blocksInDay) {
         if (blk.existingWorkOrderId) {
-          const wo = await WorkOrder.findById(blk.existingWorkOrderId);
-          if (!wo) { skipped++; continue; }
-
-          // Block in_progress from being moved (technician already at work)
-          if (wo.status === 'in_progress') { skipped++; continue; }
-
-          const updates = {};
-          const newDateStr = day.date;
-          const oldDateStr = toLocalDateString(new Date(wo.scheduledDate));
-          if (oldDateStr !== newDateStr) {
-            updates.scheduledDate = parseLocalDate(newDateStr);
+          existingIds.push(blk.existingWorkOrderId);
+          existingUpdates.push({ id: blk.existingWorkOrderId, day });
+        } else {
+          for (const branch of (blk.branches || [])) {
+            newCandidates.push({ branch, day });
           }
-          const newTech = day.assignedTo || null;
-          const oldTech = wo.assignedTo?.toString() || null;
-          if (newTech !== oldTech) {
-            updates.assignedTo = newTech || undefined;
-            // Auto-adjust status: if a tech is now assigned and was pending → assigned;
-            // if no tech and was assigned → pending
-            if (newTech && wo.status === 'pending') updates.status = 'assigned';
-            if (!newTech && wo.status === 'assigned') updates.status = 'pending';
-          }
-
-          if (Object.keys(updates).length > 0) {
-            await WorkOrder.findByIdAndUpdate(wo._id, updates);
-            updated++;
-          } else {
-            skipped++;
-          }
-          continue;
-        }
-
-        // New block → CREATE
-        for (const branch of (blk.branches || [])) {
-          const existing = await WorkOrder.findOne({
-            branchId: branch.branchId,
-            type: 'routine_refill',
-            status: { $in: ['pending', 'assigned', 'in_progress'] }
-          });
-          if (existing) { skipped++; continue; }
-
-          const devices = (branch.deviceIds || []).map(deviceId => ({
-            deviceId,
-            taskDescription: 'מילוי שוטף'
-          }));
-
-          await WorkOrder.create({
-            branchId: branch.branchId,
-            assignedTo: day.assignedTo || undefined,
-            createdBy: req.user._id,
-            scheduledDate: parseLocalDate(day.date),
-            status: day.assignedTo ? 'assigned' : 'pending',
-            type: 'routine_refill',
-            devices,
-            notes: 'נוצר מתוך מסלול שבועי'
-          });
-          created++;
         }
       }
-
-      // Legacy support (no blocks)
       for (const branch of legacyBranches) {
-        const existing = await WorkOrder.findOne({
-          branchId: branch.branchId,
-          type: 'routine_refill',
-          status: { $in: ['pending', 'assigned', 'in_progress'] }
-        });
-        if (existing) { skipped++; continue; }
+        newCandidates.push({ branch, day });
+      }
+    }
+
+    let updated = 0;
+    let skipped = 0;
+
+    // === BATCH 1: existing WO updates (one find + bulkWrite) ===
+    if (existingIds.length > 0) {
+      const existingWOs = await WorkOrder.find({ _id: { $in: existingIds } })
+        .select('_id status scheduledDate assignedTo')
+        .lean();
+      const woById = new Map(existingWOs.map(w => [w._id.toString(), w]));
+
+      const bulkOps = [];
+      for (const { id, day } of existingUpdates) {
+        const wo = woById.get(id.toString());
+        if (!wo) { skipped++; continue; }
+        if (wo.status === 'in_progress') { skipped++; continue; }
+
+        const updates = {};
+        const newDateStr = day.date;
+        const oldDateStr = toLocalDateString(new Date(wo.scheduledDate));
+        if (oldDateStr !== newDateStr) {
+          updates.scheduledDate = parseLocalDate(newDateStr);
+        }
+        const newTech = day.assignedTo || null;
+        const oldTech = wo.assignedTo?.toString() || null;
+        if (newTech !== oldTech) {
+          updates.assignedTo = newTech || undefined;
+          if (newTech && wo.status === 'pending') updates.status = 'assigned';
+          if (!newTech && wo.status === 'assigned') updates.status = 'pending';
+        }
+
+        if (Object.keys(updates).length > 0) {
+          bulkOps.push({ updateOne: { filter: { _id: wo._id }, update: { $set: updates } } });
+          updated++;
+        } else {
+          skipped++;
+        }
+      }
+      if (bulkOps.length > 0) await WorkOrder.bulkWrite(bulkOps);
+    }
+
+    // === BATCH 2: new WOs (one find for dups + insertMany) ===
+    let created = 0;
+    if (newCandidates.length > 0) {
+      const candidateBranchIds = [...new Set(newCandidates.map(c => String(c.branch.branchId)))];
+      const existingForBranches = await WorkOrder.find({
+        branchId: { $in: candidateBranchIds },
+        type: 'routine_refill',
+        status: { $in: ['pending', 'assigned', 'in_progress'] }
+      }).select('branchId').lean();
+      const branchesWithOpen = new Set(existingForBranches.map(w => w.branchId.toString()));
+
+      const docs = [];
+      for (const { branch, day } of newCandidates) {
+        if (branchesWithOpen.has(String(branch.branchId))) { skipped++; continue; }
+        // also dedup within this batch — same branch shouldn't be queued twice
+        branchesWithOpen.add(String(branch.branchId));
+
         const devices = (branch.deviceIds || []).map(deviceId => ({
           deviceId,
           taskDescription: 'מילוי שוטף'
         }));
-        await WorkOrder.create({
+        docs.push({
           branchId: branch.branchId,
           assignedTo: day.assignedTo || undefined,
           createdBy: req.user._id,
@@ -454,7 +456,10 @@ const saveSchedule = async (req, res) => {
           devices,
           notes: 'נוצר מתוך מסלול שבועי'
         });
-        created++;
+      }
+      if (docs.length > 0) {
+        await WorkOrder.insertMany(docs, { ordered: false });
+        created = docs.length;
       }
     }
 
