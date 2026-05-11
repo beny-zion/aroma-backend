@@ -16,11 +16,11 @@ router.use(protect);
 
 // Special routes (before /:id)
 router.get('/my', getMyWorkOrders);
-router.post('/auto-generate', authorize('admin', 'manager'), autoGenerateWorkOrders);
+router.post('/auto-generate', authorize('admin', 'manager', 'secretary'), autoGenerateWorkOrders);
 
 router.route('/')
-  .get(authorize('admin', 'manager'), getWorkOrders)
-  .post(authorize('admin', 'manager'), createWorkOrder);
+  .get(authorize('admin', 'manager', 'secretary'), getWorkOrders)
+  .post(authorize('admin', 'manager', 'secretary'), createWorkOrder);
 
 router.route('/:id')
   .get(getWorkOrder)
