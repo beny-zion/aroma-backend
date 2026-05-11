@@ -83,10 +83,10 @@ const getMyWorkOrders = async (req, res) => {
     const workOrders = await WorkOrder.find(query)
       .populate({
         path: 'branchId',
-        select: 'branchName address city contactPerson contactPhone customerId',
+        select: 'branchName address city region contactPerson contactPhone customerId',
         populate: { path: 'customerId', select: 'name' }
       })
-      .populate('devices.deviceId', 'deviceType locationInBranch')
+      .populate('devices.deviceId', 'deviceType locationInBranch scentId')
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
       .sort({ scheduledDate: 1 });
