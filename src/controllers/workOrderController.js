@@ -8,6 +8,24 @@ function woLabel(wo, branch) {
   return [dateStr, branchName].filter(Boolean).join(' · ') || 'הזמנת עבודה';
 }
 
+// scheduledDate is stored as local midnight (see scheduleController.parseLocalDate),
+// so YYYY-MM-DD filters must also be interpreted in the server's local TZ.
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+function startOfLocalDay(s) {
+  if (typeof s === 'string' && DATE_ONLY_RE.test(s)) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  }
+  return new Date(s);
+}
+function startOfNextLocalDay(s) {
+  if (typeof s === 'string' && DATE_ONLY_RE.test(s)) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d + 1);
+  }
+  return new Date(s);
+}
+
 // @desc    Get all work orders (admin/manager)
 // @route   GET /api/work-orders
 const getWorkOrders = async (req, res) => {
@@ -31,8 +49,8 @@ const getWorkOrders = async (req, res) => {
     }
     if (dateFrom || dateTo) {
       query.scheduledDate = {};
-      if (dateFrom) query.scheduledDate.$gte = new Date(dateFrom);
-      if (dateTo) query.scheduledDate.$lte = new Date(dateTo);
+      if (dateFrom) query.scheduledDate.$gte = startOfLocalDay(dateFrom);
+      if (dateTo) query.scheduledDate.$lt = startOfNextLocalDay(dateTo);
     }
 
     const limitNum = Math.min(Number(limit), 100);
