@@ -13,6 +13,7 @@ const analyticsRoutes = require('./analyticsRoutes');
 const scheduleRoutes = require('./scheduleRoutes');
 const auditRoutes = require('./auditRoutes');
 const permissionsRoutes = require('./permissionsRoutes');
+const serviceRequestRoutes = require('./serviceRequestRoutes');
 
 module.exports = {
   customerRoutes,
@@ -29,5 +30,6 @@ module.exports = {
   analyticsRoutes,
   scheduleRoutes,
   auditRoutes,
-  permissionsRoutes
+  permissionsRoutes,
+  serviceRequestRoutes
 };
