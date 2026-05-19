@@ -4,6 +4,7 @@ const { protect, authorize } = require('../middleware/auth');
 const {
   getWorkOrders,
   getMyWorkOrders,
+  getQueueByTechnician,
   getWorkOrder,
   createWorkOrder,
   updateWorkOrder,
@@ -16,6 +17,7 @@ router.use(protect);
 
 // Special routes (before /:id)
 router.get('/my', getMyWorkOrders);
+router.get('/queue-by-technician', authorize('admin', 'manager', 'secretary'), getQueueByTechnician);
 router.post('/auto-generate', authorize('admin', 'manager', 'secretary'), autoGenerateWorkOrders);
 
 router.route('/')

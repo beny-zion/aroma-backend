@@ -12,6 +12,7 @@ const ServiceLog = require('../models/ServiceLog');
 const Scent = require('../models/Scent');
 const WorkOrder = require('../models/WorkOrder');
 const User = require('../models/User');
+const ServiceRequest = require('../models/ServiceRequest');
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -151,14 +152,16 @@ const executors = {
       .select('branchName city region isActive')
       .lean();
 
-    // Get device counts per branch
+    // Get device counts + monthlyRate sum per branch
     const branchIds = branches.map(b => b._id);
+    const activeBranchIds = branches.filter(b => b.isActive !== false).map(b => b._id);
     const deviceStats = await Device.aggregate([
       { $match: { branchId: { $in: branchIds }, isActive: true } },
       {
         $group: {
           _id: '$branchId',
           total: { $sum: 1 },
+          monthlyRateSum: { $sum: { $ifNull: ['$monthlyRate', 0] } },
           green: {
             $sum: {
               $cond: [{
@@ -184,17 +187,34 @@ const executors = {
     ]);
     const statsMap = Object.fromEntries(deviceStats.map(s => [s._id.toString(), s]));
 
+    // Sum device monthly rates across active branches only (matches GET /customers/:id/summary logic)
+    const deviceMonthlyTotal = branches.reduce((sum, b) => {
+      if (b.isActive === false) return sum;
+      const s = statsMap[b._id.toString()];
+      return sum + (s?.monthlyRateSum || 0);
+    }, 0);
+
+    const monthlyPrice = customer.monthlyPrice || 0;
+    const totalMonthlyRevenue = monthlyPrice + deviceMonthlyTotal;
+
     return {
       customer: {
         _id: customer._id,
         name: customer.name,
         status: customer.status,
-        monthlyPrice: customer.monthlyPrice,
         phone: customer.billingDetails?.phone,
         email: customer.billingDetails?.email
       },
+      billing: {
+        contractMonthlyPrice: monthlyPrice,
+        deviceMonthlyRateSum: deviceMonthlyTotal,
+        totalMonthlyRevenue,
+        projectedAnnualRevenue: totalMonthlyRevenue * 12,
+        currency: 'ILS',
+        note: 'מבוסס MRR חוזה - לא תשלומים בפועל'
+      },
       branches: branches.map(b => {
-        const stats = statsMap[b._id.toString()] || { total: 0, green: 0, red: 0 };
+        const stats = statsMap[b._id.toString()] || { total: 0, green: 0, red: 0, monthlyRateSum: 0 };
         return {
           _id: b._id,
           branchName: b.branchName,
@@ -204,7 +224,8 @@ const executors = {
           totalDevices: stats.total,
           greenDevices: stats.green,
           yellowDevices: stats.total - stats.green - stats.red,
-          redDevices: stats.red
+          redDevices: stats.red,
+          monthlyRateSum: stats.monthlyRateSum || 0
         };
       }),
       totalBranches: branches.length
@@ -665,15 +686,50 @@ const executors = {
     if (args.type) query.type = args.type;
     if (args.assignedTo && isValidId(args.assignedTo)) query.assignedTo = args.assignedTo;
     if (args.branchId && isValidId(args.branchId)) query.branchId = args.branchId;
-    const limit = Math.min(args.limit || 10, 20);
+    const limit = Math.min(args.limit || 10, 50);
 
-    const workOrders = await WorkOrder.find(query)
-      .populate({ path: 'branchId', select: 'branchName city', populate: { path: 'customerId', select: 'name' } })
-      .populate('assignedTo', 'name')
-      .select('status priority type scheduledDate completedDate branchId assignedTo notes')
-      .sort({ scheduledDate: 1 })
-      .limit(limit)
-      .lean();
+    // Date filtering. dayOfWeek wins over dateFrom/dateTo.
+    const parseLocalDate = (s) => {
+      const [y, m, d] = String(s).split('-').map(Number);
+      return new Date(y, (m || 1) - 1, d || 1);
+    };
+
+    if (typeof args.dayOfWeek === 'number' && args.dayOfWeek >= 0 && args.dayOfWeek <= 6) {
+      // Find the next 4 occurrences of this weekday starting from today
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const dates = [];
+      let cursor = new Date(today);
+      // advance to the next matching weekday (inclusive of today)
+      while (cursor.getDay() !== args.dayOfWeek) cursor.setDate(cursor.getDate() + 1);
+      for (let i = 0; i < 4; i++) {
+        dates.push(new Date(cursor));
+        cursor.setDate(cursor.getDate() + 7);
+      }
+      query.$or = dates.map(d => {
+        const next = new Date(d); next.setDate(next.getDate() + 1);
+        return { scheduledDate: { $gte: d, $lt: next } };
+      });
+    } else if (args.dateFrom || args.dateTo) {
+      const range = {};
+      if (args.dateFrom) range.$gte = parseLocalDate(args.dateFrom);
+      if (args.dateTo) {
+        const end = parseLocalDate(args.dateTo);
+        end.setDate(end.getDate() + 1); // inclusive of dateTo
+        range.$lt = end;
+      }
+      query.scheduledDate = range;
+    }
+
+    const [totalCount, workOrders] = await Promise.all([
+      WorkOrder.countDocuments(query),
+      WorkOrder.find(query)
+        .populate({ path: 'branchId', select: 'branchName city', populate: { path: 'customerId', select: 'name' } })
+        .populate('assignedTo', 'name')
+        .select('status priority type scheduledDate completedDate branchId assignedTo notes')
+        .sort({ scheduledDate: 1 })
+        .limit(limit)
+        .lean()
+    ]);
 
     return {
       workOrders: workOrders.map(wo => ({
@@ -687,10 +743,14 @@ const executors = {
         branchId: wo.branchId?._id,
         city: wo.branchId?.city,
         customer: wo.branchId?.customerId?.name,
+        customerId: wo.branchId?.customerId?._id,
         technician: wo.assignedTo?.name || 'לא משובץ',
+        technicianId: wo.assignedTo?._id || null,
         notes: wo.notes
       })),
-      totalFound: workOrders.length
+      totalCount,
+      returnedInList: workOrders.length,
+      truncated: totalCount > workOrders.length
     };
   },
 
@@ -827,6 +887,79 @@ const executors = {
       summary: {
         totalBranches: branches.length,
         ...totals
+      }
+    };
+  },
+
+  // Tool 14: Get service requests (customer-reported faults with SLA)
+  get_service_requests: async (args) => {
+    const query = {};
+    if (args.status) query.status = args.status;
+    if (args.urgency) query.urgency = args.urgency;
+    if (args.customerId && isValidId(args.customerId)) {
+      query.customerId = new mongoose.Types.ObjectId(args.customerId);
+    }
+    if (args.branchId && isValidId(args.branchId)) {
+      query.branchId = new mongoose.Types.ObjectId(args.branchId);
+    }
+    if (args.overdueOnly) {
+      query.status = 'open';
+      query.targetByDate = { $lt: new Date() };
+    }
+
+    const limit = Math.min(args.limit || 10, 50);
+    const urgencyOrder = { urgent: 0, medium: 1, low: 2 };
+
+    const [totalCount, overdueSlaCount, openCount, requests] = await Promise.all([
+      ServiceRequest.countDocuments(query),
+      ServiceRequest.countDocuments({ status: 'open', targetByDate: { $lt: new Date() } }),
+      ServiceRequest.countDocuments({ status: 'open' }),
+      ServiceRequest.find(query)
+        .populate({
+          path: 'branchId',
+          select: 'branchName city customerId',
+          populate: { path: 'customerId', select: 'name' }
+        })
+        .populate('workOrderId', 'scheduledDate status')
+        .select('issueType description urgency status targetByDate resolvedAt createdAt reportedBy')
+        .limit(limit)
+        .lean()
+    ]);
+
+    // Sort by urgency then SLA target (closest deadline first)
+    requests.sort((a, b) => {
+      const u = (urgencyOrder[a.urgency] ?? 99) - (urgencyOrder[b.urgency] ?? 99);
+      if (u !== 0) return u;
+      return new Date(a.targetByDate) - new Date(b.targetByDate);
+    });
+
+    const now = new Date();
+    return {
+      requests: requests.map(r => ({
+        _id: r._id,
+        issueType: r.issueType,
+        description: r.description,
+        urgency: r.urgency,
+        status: r.status,
+        targetByDate: r.targetByDate ? new Date(r.targetByDate).toISOString().split('T')[0] : null,
+        isOverdueSla: r.status === 'open' && r.targetByDate && new Date(r.targetByDate) < now,
+        reportedBy: r.reportedBy,
+        branch: r.branchId?.branchName,
+        branchId: r.branchId?._id,
+        city: r.branchId?.city,
+        customer: r.branchId?.customerId?.name,
+        customerId: r.branchId?.customerId?._id,
+        workOrderId: r.workOrderId?._id || null,
+        workOrderScheduledDate: r.workOrderId?.scheduledDate
+          ? new Date(r.workOrderId.scheduledDate).toISOString().split('T')[0]
+          : null
+      })),
+      totalCount,
+      returnedInList: requests.length,
+      truncated: totalCount > requests.length,
+      globals: {
+        totalOpenInSystem: openCount,
+        totalOverdueSla: overdueSlaCount
       }
     };
   }

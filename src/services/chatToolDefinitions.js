@@ -18,7 +18,7 @@ const toolDefinitions = [
   },
   {
     name: 'get_customer_details',
-    description: 'Get full details of a specific customer including all their branches and device status counts per branch. Use when user asks about a specific customer.',
+    description: 'Get full details of a specific customer including billing breakdown (contract monthly + device monthly rate sum + projected annual), all branches, and device status counts per branch. USE THIS for questions like "how much does customer X pay?", "what is X paying us monthly/yearly?", or any billing/revenue question about a specific customer.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -120,7 +120,7 @@ const toolDefinitions = [
   },
   {
     name: 'get_work_orders',
-    description: 'Search work orders by status, priority, type, assigned technician, or branch. Use when user asks about work orders, tasks, or assignments.',
+    description: 'Search work orders by status, priority, type, assigned technician, branch, or date. Use for ANY date-based question ("Sunday tasks?", "what is scheduled this week?", "tomorrow"). Returns totalCount + list. Date params: dateFrom/dateTo (YYYY-MM-DD inclusive range) OR dayOfWeek (0=Sunday..6=Saturday — returns matches across the next 4 weeks on that weekday).',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -129,7 +129,10 @@ const toolDefinitions = [
         type: { type: 'STRING', enum: ['routine_refill', 'repair', 'installation', 'removal', 'complaint'], description: 'Filter by work order type' },
         assignedTo: { type: 'STRING', description: 'Filter by assigned technician user ID' },
         branchId: { type: 'STRING', description: 'Filter by branch ID' },
-        limit: { type: 'NUMBER', description: 'Max results (default: 10, max: 20)' }
+        dateFrom: { type: 'STRING', description: 'Start date inclusive, format YYYY-MM-DD (local date)' },
+        dateTo: { type: 'STRING', description: 'End date inclusive, format YYYY-MM-DD (local date)' },
+        dayOfWeek: { type: 'NUMBER', description: 'Day of week filter: 0=Sunday, 1=Monday, ..., 6=Saturday. Returns matches on that weekday across the next 4 weeks (overrides dateFrom/dateTo).' },
+        limit: { type: 'NUMBER', description: 'Max results returned in list (default: 10, max: 50). totalCount always reflects the full match count.' }
       }
     }
   },
@@ -152,6 +155,21 @@ const toolDefinitions = [
         city: { type: 'STRING', description: 'Filter by city (Hebrew)' },
         region: { type: 'STRING', description: 'Filter by region (Hebrew)' },
         customerId: { type: 'STRING', description: 'Filter by customer ID' }
+      }
+    }
+  },
+  {
+    name: 'get_service_requests',
+    description: 'List customer-reported service requests (faults, leaks, scent complaints, refill requests). Use for ANY question about תקלות / פניות שירות / קריאות שירות / SLA / "פניות פתוחות" / "תקלות חורגות". Returns totalCount + list sorted by urgency. overdueSlaCount tells how many open requests passed their SLA target date.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        status: { type: 'STRING', enum: ['open', 'scheduled', 'completed', 'cancelled'], description: 'Lifecycle status' },
+        urgency: { type: 'STRING', enum: ['urgent', 'medium', 'low'], description: 'Urgency level — urgent gets +3d SLA, medium +10d, low +14d' },
+        customerId: { type: 'STRING', description: 'Filter by customer ID' },
+        branchId: { type: 'STRING', description: 'Filter by branch ID' },
+        overdueOnly: { type: 'BOOLEAN', description: 'If true, return only open requests where targetByDate has passed (SLA breach)' },
+        limit: { type: 'NUMBER', description: 'Max results in list (default 10, max 50). totalCount always reflects full match.' }
       }
     }
   }

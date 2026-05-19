@@ -90,8 +90,17 @@ const sendMessage = async (req, res) => {
     });
   } catch (error) {
     console.error('Chat error:', error.message);
+    if (error.name === 'ValidationError') {
+      console.error('Chat ValidationError details:', JSON.stringify(error.errors, null, 2));
+    }
     console.error('Chat stack:', error.stack);
-    res.status(500).json({ message: 'שגיאה בעיבוד ההודעה. נסה שוב.', error: error.message });
+    // In development, return the actual error so the frontend can surface it during debugging
+    const isDev = process.env.NODE_ENV !== 'production';
+    res.status(500).json({
+      message: 'שגיאה בעיבוד ההודעה. נסה שוב.',
+      error: error.message,
+      ...(isDev ? { name: error.name, details: error.errors } : {})
+    });
   }
 };
 

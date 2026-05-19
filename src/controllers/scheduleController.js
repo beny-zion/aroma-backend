@@ -1,4 +1,5 @@
 const { Device, WorkOrder, Branch } = require('../models');
+const { toLocalDateString, parseLocalDate } = require('../utils/dateHelpers');
 
 // Lazy-load @hebcal/core (ESM-only) and cache the module promise
 let hebcalPromise = null;
@@ -54,21 +55,6 @@ async function getHolidayInfo(date) {
     type,
     isWorkBlocked
   };
-}
-
-// Format a Date to YYYY-MM-DD in local time (avoids UTC shift)
-function toLocalDateString(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-// Parse YYYY-MM-DD as a local date (not UTC midnight)
-function parseLocalDate(s) {
-  if (!s) return new Date();
-  const [y, m, d] = String(s).split('-').map(Number);
-  return new Date(y, (m || 1) - 1, d || 1);
 }
 
 // @desc    Suggest a weekly schedule grouped into city+region blocks
@@ -479,4 +465,122 @@ const saveSchedule = async (req, res) => {
   }
 };
 
-module.exports = { suggestSchedule, saveSchedule };
+// @desc    Read-only calendar view of work orders within a date range
+// @route   GET /api/schedule/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD
+// @access  admin / manager / secretary
+const getCalendarView = async (req, res) => {
+  try {
+    const { from, to, maxBranchesPerDay = 30 } = req.query;
+    const cap = Math.max(1, Number(maxBranchesPerDay));
+
+    const fromDate = from ? parseLocalDate(from) : (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
+    const toDate = to ? parseLocalDate(to) : (() => { const d = new Date(fromDate); d.setDate(d.getDate() + 14); return d; })();
+    fromDate.setHours(0, 0, 0, 0);
+    toDate.setHours(0, 0, 0, 0);
+
+    // Inclusive of `to` day — query < (to + 1 day)
+    const queryEnd = new Date(toDate);
+    queryEnd.setDate(queryEnd.getDate() + 1);
+
+    const workOrders = await WorkOrder.find({
+      scheduledDate: { $gte: fromDate, $lt: queryEnd }
+    })
+      .populate({
+        path: 'branchId',
+        select: 'branchName city region customerId',
+        populate: { path: 'customerId', select: 'name' }
+      })
+      .populate('assignedTo', '_id name')
+      .sort({ scheduledDate: 1 })
+      .lean();
+
+    // Build days array between fromDate and toDate (inclusive)
+    const days = [];
+    const dayCursor = new Date(fromDate);
+    while (dayCursor <= toDate) {
+      const holiday = await getHolidayInfo(dayCursor);
+      days.push({
+        date: toLocalDateString(dayCursor),
+        dayOfWeek: dayCursor.getDay(),
+        holiday,
+        workOrders: [],
+        techniciansAssigned: [],
+        totalBranches: 0,
+        capacity: { used: 0, max: cap, available: cap }
+      });
+      dayCursor.setDate(dayCursor.getDate() + 1);
+    }
+    const dayByDate = new Map(days.map(d => [d.date, d]));
+
+    // Bucket WOs into days
+    const techByDay = new Map(); // dateKey → Map(techId → { name, workOrderCount, branchCount, branchIds })
+    for (const wo of workOrders) {
+      const dateKey = toLocalDateString(new Date(wo.scheduledDate));
+      const day = dayByDate.get(dateKey);
+      if (!day) continue;
+
+      day.workOrders.push({
+        _id: wo._id,
+        branchId: wo.branchId?._id,
+        branchName: wo.branchId?.branchName || '',
+        city: wo.branchId?.city || '',
+        region: wo.branchId?.region || '',
+        customerName: wo.branchId?.customerId?.name || '',
+        scheduledDate: wo.scheduledDate,
+        status: wo.status,
+        priority: wo.priority,
+        type: wo.type,
+        technicianId: wo.assignedTo?._id || null,
+        technicianName: wo.assignedTo?.name || null,
+        devicesCount: (wo.devices || []).length
+      });
+
+      if (wo.assignedTo?._id) {
+        if (!techByDay.has(dateKey)) techByDay.set(dateKey, new Map());
+        const tMap = techByDay.get(dateKey);
+        const techKey = wo.assignedTo._id.toString();
+        if (!tMap.has(techKey)) {
+          tMap.set(techKey, {
+            _id: wo.assignedTo._id,
+            name: wo.assignedTo.name,
+            workOrderCount: 0,
+            branchIds: new Set()
+          });
+        }
+        const t = tMap.get(techKey);
+        t.workOrderCount += 1;
+        if (wo.branchId?._id) t.branchIds.add(wo.branchId._id.toString());
+      }
+    }
+
+    // Finalize per-day technicians and counts
+    for (const day of days) {
+      const tMap = techByDay.get(day.date);
+      if (tMap) {
+        day.techniciansAssigned = Array.from(tMap.values()).map(t => ({
+          _id: t._id,
+          name: t.name,
+          workOrderCount: t.workOrderCount,
+          branchCount: t.branchIds.size
+        }));
+      }
+      day.totalBranches = day.workOrders.length;
+      day.capacity = {
+        used: day.totalBranches,
+        max: cap,
+        available: Math.max(0, cap - day.totalBranches)
+      };
+    }
+
+    res.json({
+      from: toLocalDateString(fromDate),
+      to: toLocalDateString(toDate),
+      days
+    });
+  } catch (error) {
+    console.error('getCalendarView error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+module.exports = { suggestSchedule, saveSchedule, getCalendarView };

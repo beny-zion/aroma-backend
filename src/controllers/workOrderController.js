@@ -1,29 +1,12 @@
 const { WorkOrder, Branch, Device, User } = require('../models');
 const mongoose = require('mongoose');
 const { logEvent, logUpdate } = require('../utils/audit');
+const { startOfLocalDay, startOfNextLocalDay } = require('../utils/dateHelpers');
 
 function woLabel(wo, branch) {
   const dateStr = wo.scheduledDate ? new Date(wo.scheduledDate).toLocaleDateString('he-IL') : '';
   const branchName = branch?.branchName || branch?.name || '';
   return [dateStr, branchName].filter(Boolean).join(' · ') || 'הזמנת עבודה';
-}
-
-// scheduledDate is stored as local midnight (see scheduleController.parseLocalDate),
-// so YYYY-MM-DD filters must also be interpreted in the server's local TZ.
-const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
-function startOfLocalDay(s) {
-  if (typeof s === 'string' && DATE_ONLY_RE.test(s)) {
-    const [y, m, d] = s.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  }
-  return new Date(s);
-}
-function startOfNextLocalDay(s) {
-  if (typeof s === 'string' && DATE_ONLY_RE.test(s)) {
-    const [y, m, d] = s.split('-').map(Number);
-    return new Date(y, m - 1, d + 1);
-  }
-  return new Date(s);
 }
 
 // @desc    Get all work orders (admin/manager)
@@ -70,11 +53,165 @@ const getWorkOrders = async (req, res) => {
 
     const total = await WorkOrder.countDocuments(query);
 
+    // Summary aggregations — only on page 1 (avoid extra queries when paging through results)
+    let summary = null;
+    if (pageNum === 1) {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const [byStatus, byPriority, overdueCount] = await Promise.all([
+        WorkOrder.aggregate([
+          { $match: query },
+          { $group: { _id: '$status', count: { $sum: 1 } } }
+        ]),
+        WorkOrder.aggregate([
+          { $match: query },
+          { $group: { _id: '$priority', count: { $sum: 1 } } }
+        ]),
+        WorkOrder.countDocuments({
+          ...query,
+          status: { $in: ['pending', 'assigned', 'in_progress'] },
+          scheduledDate: { $lt: todayStart }
+        })
+      ]);
+
+      const statusCounts = { pending: 0, assigned: 0, in_progress: 0, completed: 0, cancelled: 0 };
+      for (const r of byStatus) if (r._id in statusCounts) statusCounts[r._id] = r.count;
+      const priorityCounts = { low: 0, medium: 0, high: 0, urgent: 0 };
+      for (const r of byPriority) if (r._id in priorityCounts) priorityCounts[r._id] = r.count;
+
+      summary = { byStatus: statusCounts, byPriority: priorityCounts, overdueCount };
+    }
+
     res.json({
       data: workOrders,
-      pagination: { page: pageNum, limit: limitNum, total }
+      pagination: { page: pageNum, limit: limitNum, total },
+      ...(summary ? { summary } : {})
     });
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Get queue/workload summary per technician
+// @route   GET /api/work-orders/queue-by-technician
+// @access  admin / manager / secretary
+const getQueueByTechnician = async (req, res) => {
+  try {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(todayStart);
+    todayEnd.setDate(todayEnd.getDate() + 1);
+    const weekEnd = new Date(todayStart);
+    weekEnd.setDate(weekEnd.getDate() + 7);
+
+    const technicians = await User.find({ role: 'technician', isActive: true })
+      .select('_id name phone assignedRegions')
+      .lean();
+
+    // Aggregations across all WOs that have an assignedTo
+    const [statusByTech, todayByTech, weekByTech, nextByTech, lastCompletedByTech, unassignedTotal] = await Promise.all([
+      // Open status counts per tech
+      WorkOrder.aggregate([
+        { $match: { assignedTo: { $ne: null }, status: { $in: ['pending', 'assigned', 'in_progress'] } } },
+        { $group: { _id: { tech: '$assignedTo', status: '$status' }, count: { $sum: 1 } } }
+      ]),
+      // Today: open + completed counts per tech
+      WorkOrder.aggregate([
+        { $match: { assignedTo: { $ne: null }, scheduledDate: { $gte: todayStart, $lt: todayEnd } } },
+        { $group: { _id: { tech: '$assignedTo', status: '$status' }, count: { $sum: 1 } } }
+      ]),
+      // This week (next 7 days) per tech
+      WorkOrder.aggregate([
+        { $match: {
+          assignedTo: { $ne: null },
+          status: { $in: ['pending', 'assigned', 'in_progress'] },
+          scheduledDate: { $gte: todayStart, $lt: weekEnd }
+        }},
+        { $group: { _id: '$assignedTo', count: { $sum: 1 } } }
+      ]),
+      // Next upcoming WO per tech
+      WorkOrder.aggregate([
+        { $match: { assignedTo: { $ne: null }, status: { $in: ['assigned', 'in_progress'] } } },
+        { $sort: { scheduledDate: 1 } },
+        { $group: { _id: '$assignedTo', wo: { $first: '$$ROOT' } } },
+        { $lookup: { from: 'branches', localField: 'wo.branchId', foreignField: '_id', as: 'branch' } },
+        { $unwind: { path: '$branch', preserveNullAndEmptyArrays: true } },
+        { $project: {
+          _id: 1,
+          workOrderId: '$wo._id',
+          branchName: '$branch.branchName',
+          city: '$branch.city',
+          scheduledDate: '$wo.scheduledDate',
+          devicesCount: { $size: { $ifNull: ['$wo.devices', []] } }
+        }}
+      ]),
+      // Last completed per tech
+      WorkOrder.aggregate([
+        { $match: { assignedTo: { $ne: null }, status: 'completed' } },
+        { $sort: { completedDate: -1 } },
+        { $group: { _id: '$assignedTo', completedDate: { $first: '$completedDate' } } }
+      ]),
+      WorkOrder.countDocuments({ assignedTo: null, status: { $in: ['pending'] } })
+    ]);
+
+    // Build lookup maps
+    const statusMap = new Map();
+    for (const r of statusByTech) {
+      const key = r._id.tech.toString();
+      if (!statusMap.has(key)) statusMap.set(key, { pending: 0, assigned: 0, in_progress: 0 });
+      const bucket = statusMap.get(key);
+      if (r._id.status in bucket) bucket[r._id.status] = r.count;
+    }
+    const todayOpenMap = new Map();
+    const todayCompletedMap = new Map();
+    for (const r of todayByTech) {
+      const key = r._id.tech.toString();
+      if (r._id.status === 'completed') {
+        todayCompletedMap.set(key, r.count);
+      } else if (['pending', 'assigned', 'in_progress'].includes(r._id.status)) {
+        todayOpenMap.set(key, (todayOpenMap.get(key) || 0) + r.count);
+      }
+    }
+    const weekMap = new Map(weekByTech.map(r => [r._id.toString(), r.count]));
+    const nextMap = new Map(nextByTech.map(r => [r._id.toString(), r]));
+    const lastCompletedMap = new Map(lastCompletedByTech.map(r => [r._id.toString(), r.completedDate]));
+
+    const data = technicians.map(tech => {
+      const key = tech._id.toString();
+      const counts = statusMap.get(key) || { pending: 0, assigned: 0, in_progress: 0 };
+      const next = nextMap.get(key);
+      return {
+        technician: {
+          _id: tech._id,
+          name: tech.name,
+          phone: tech.phone,
+          assignedRegions: tech.assignedRegions || []
+        },
+        counts: {
+          ...counts,
+          completed_today: todayCompletedMap.get(key) || 0
+        },
+        openTotal: counts.pending + counts.assigned + counts.in_progress,
+        todayCount: todayOpenMap.get(key) || 0,
+        thisWeekCount: weekMap.get(key) || 0,
+        nextWorkOrder: next ? {
+          _id: next.workOrderId,
+          branchName: next.branchName,
+          city: next.city,
+          scheduledDate: next.scheduledDate,
+          devicesCount: next.devicesCount
+        } : null,
+        lastCompletedAt: lastCompletedMap.get(key) || null
+      };
+    });
+
+    // Sort: busiest first (highest openTotal)
+    data.sort((a, b) => b.openTotal - a.openTotal);
+
+    res.json({ data, unassignedTotal });
+  } catch (error) {
+    console.error('getQueueByTechnician error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -426,6 +563,7 @@ const autoGenerateWorkOrders = async (req, res) => {
 module.exports = {
   getWorkOrders,
   getMyWorkOrders,
+  getQueueByTechnician,
   getWorkOrder,
   createWorkOrder,
   updateWorkOrder,

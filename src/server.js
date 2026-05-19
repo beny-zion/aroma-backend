@@ -26,7 +26,8 @@ const {
   scheduleRoutes,
   auditRoutes,
   permissionsRoutes,
-  serviceRequestRoutes
+  serviceRequestRoutes,
+  reportsRoutes
 } = require('./routes');
 
 const app = express();
@@ -109,6 +110,7 @@ app.use('/api/scents', protect, scentRoutes);
 app.use('/api/admin', protect, adminRoutes);
 app.use('/api/device-types', protect, deviceTypeRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/reports', reportsRoutes);
 
 // Analytics routes (track is public, admin endpoints use their own password middleware)
 const analyticsLimiter = rateLimit({
