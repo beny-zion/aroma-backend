@@ -12,7 +12,7 @@ const chatMessageSchema = new mongoose.Schema({
     maxlength: 5000
   },
   entityLinks: [{
-    type: { type: String, enum: ['customer', 'branch', 'device', 'work-order', 'scent', 'technician', 'user', 'page'] },
+    type: { type: String, enum: ['customer', 'branch', 'device', 'work-order', 'scent', 'technician', 'user', 'service-request', 'page'] },
     entityId: String,
     displayName: String
   }],

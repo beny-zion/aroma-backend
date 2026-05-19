@@ -7,7 +7,7 @@
  *     Example: [[page:/schedule:לוח שבועי]]
  */
 
-const ENTITY_LINK_REGEX = /\[\[(customer|branch|device|work-order|scent|technician|user):([a-f0-9]{24}):([^\]]+)\]\]/g;
+const ENTITY_LINK_REGEX = /\[\[(customer|branch|device|work-order|scent|technician|user|service-request):([a-f0-9]{24}):([^\]]+)\]\]/g;
 const PAGE_LINK_REGEX = /\[\[page:(\/[a-zA-Z0-9\/_\-]*):([^\]]+)\]\]/g;
 
 function extractEntityLinks(text) {

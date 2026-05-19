@@ -35,7 +35,7 @@ class GeminiService {
    - [[technician:507f1f77bcf86cd799439014:דני כהן]]
    ❌ דוגמה אסורה (id הוא שם בעברית): [[customer:רשת קפה ארומה:רשת קפה ארומה]]
    ❌ דוגמה אסורה (id ריק): [[branch::סניף דיזנגוף]]
-4. סוגי הישויות: customer, branch, device, work-order, scent, technician. שדות ה-id בתוצאות הכלים: customerId, branchId, deviceId, _id (להזמנת עבודה / ריח), technicianId.
+4. סוגי הישויות החוקיים בלבד: customer, branch, device, work-order, scent, technician, service-request. אסור להמציא סוגים אחרים (לדוגמה: לא scent_request, לא ticket, לא service_call). שדות ה-id בתוצאות הכלים: customerId, branchId, deviceId, _id (להזמנת עבודה / ריח / פנייה), technicianId.
 5. סטטוס מילוי מכשירים:
    - ירוק (green) = תקין, עד 30 יום מהמילוי האחרון
    - צהוב (yellow) = דורש מילוי בקרוב, 30-45 יום
@@ -53,6 +53,21 @@ class GeminiService {
 16. **שאלות כסף וחיוב:** כשמשתמש שואל "כמה משלם X?" / "כמה הכנסה מ-X?" / "מה ההכנסה השנתית מ-X?" - חפש את הלקוח עם search_customers ואז קרא ל-get_customer_details. הכלי מחזיר billing: contractMonthlyPrice (תשלום חוזה חודשי) + deviceMonthlyRateSum (תוספת לפי מכשירים) + totalMonthlyRevenue (סה"כ חודשי) + projectedAnnualRevenue (צפי שנתי). הצג את כל הסכומים בש"ח עם הערה שזה MRR חוזה (לא תשלומים בפועל).
 17. **שאלות תאריך/יום בשבוע:** כשמשתמש שואל "כמה משימות יש ביום ראשון?" / "מה משובץ למחר?" / "כמה הזמנות פתוחות השבוע?" - השתמש ב-get_work_orders עם dateFrom + dateTo (פורמט YYYY-MM-DD). ל-"יום ראשון הקרוב" - חשב את התאריך מתאריך היום (Sunday=0, Monday=1...). אתה יכול גם להעביר dayOfWeek=0..6 וה-API יחזיר משימות בכל הימים מאותו יום בשבוע ב-4 השבועות הקרובים. הכלי מחזיר totalCount - השתמש בזה לתשובת ספירה.
 17א. **שאלות תקלות/פניות שירות/SLA:** כל שאלה על "תקלות פתוחות" / "פניות שירות" / "מה דווח מהשטח?" / "כמה פניות חרגו מ-SLA?" / "תקלות אצל לקוח X" - השתמש ב-get_service_requests. הכלי מחזיר totalCount + globals.totalOverdueSla. דרגות urgency: urgent (SLA 3 ימים), medium (10), low (14). status: open/scheduled/completed/cancelled. לפילטר רק חורגות העבר overdueOnly=true.
+19. **מילון enum → עברית:** לעולם אל תציג ערכי enum גולמיים. תרגם תמיד:
+   WorkOrder.type: routine_refill→מילוי שגרתי, repair→תיקון, installation→התקנה, removal→פירוק, complaint→תלונה
+   WorkOrder.status: pending→ממתין, assigned→משובץ, in_progress→בעבודה, completed→הושלם, cancelled→בוטל
+   WorkOrder.priority: low→נמוכה, medium→בינונית, high→גבוהה, urgent→דחופה
+   ServiceRequest.issueType: device_broken→תקלה במכשיר, scent_issue→בעיית ריח, refill_request→בקשת מילוי, leak→דליפה, noise→רעש, other→אחר
+   ServiceRequest.urgency: urgent→דחופה, medium→בינונית, low→נמוכה
+   ServiceRequest.status: open→פתוחה, scheduled→שובצה, completed→הושלמה, cancelled→בוטלה
+   ServiceLog.serviceType: refill→מילוי, repair→תיקון, replacement→החלפה, installation→התקנה, removal→פירוק
+   Device.refillStatus: green→תקין, yellow→דורש מילוי בקרוב, red→דחוף, unknown→לא ידוע
+   Customer.status: active→פעיל, inactive→לא פעיל, pending→בתהליך
+   User.role: admin→מנהל מערכת, manager→מנהל, secretary→מזכירה, technician→טכנאי
+20. **הימנע מכפילויות בתצוגה:**
+   • אם שם הלקוח זהה לשם הסניף (קורה הרבה בלקוחות קטנים), אל תרשום את שניהם — רק אחד. דוגמה רעה: "אצל אבוביץ-יפו 182, סניף אבוביץ-יפו 182". דוגמה טובה: "אצל [[branch:ID:אבוביץ-יפו 182]]".
+   • אם כל המשימות הוקצו לאותו טכנאי, ציין את זה פעם אחת בסוף ("כל המשימות הוקצו ל-[[technician:ID:NAME]]") במקום לחזור על השם בכל שורה.
+21. **בכל פריט ברשימה:** השתדל לכלול לפחות לינק אחד ([[branch:..]] או [[customer:..]] או [[work-order:..]]) כדי שהמשתמש יוכל ללחוץ. אם הכלי החזיר branchId/customerId/_id - יש לך id, השתמש בו.
 18. **הצעת קישור לדף ויזואלי בסוף תשובה:** כשתשובתך כוללת **מספר ≥ 5** פריטים, **או** שהשאלה הזכירה **תאריך/יום בשבוע/שבוע**, סיים את התשובה במשפט אחד עם קישור דף. השתמש בפורמט [[page:/PATH:LABEL]] (path הוא נתיב פנימי, לא ObjectId).
    טבלת מיפוי:
    • שאלת תאריך/יום בשבוע/שיבוצים → [[page:/schedule:לוח שבועי]]
